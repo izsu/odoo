@@ -220,7 +220,7 @@ export class VideoSelector extends Component {
 
         const options = {};
         if (this.props.isForBgVideo && URL.canParse(url)) {
-            const parsedUrl = new URL(this.state.urlInput);
+            const parsedUrl = new URL(url);
             const urlParams = parsedUrl.searchParams;
             const startFrom =
                 urlParams.get("start") || urlParams.get("startTime") || urlParams.get("t");
@@ -410,7 +410,7 @@ export class VideoSelector extends Component {
      * @returns {string} - The start time in seconds.
      */
     parseTimeToSeconds(value) {
-        const match = value.match(/^(?:(\d+)m(\d+)s|(\d+)m|(\d+)s|(\d+))$/);
+        const match = value?.match(/^(?:(\d+)m(\d+)s|(\d+)m|(\d+)s|(\d+))$/);
         if (!match) {
             return value;
         }

@@ -10,6 +10,14 @@ const CONSOLE_COLOR = "#F5B427";
 
 export class PosConfig extends Base {
     static pythonModel = "pos.config";
+    static excludedLazyGetters = [
+        "hasCashRounding",
+        "hasGlobalRounding",
+        "displayBigTrackingNumber",
+        "displayTrackingNumber",
+        "receiptLogoUrl",
+        "receiptCompanyLogoUrl",
+    ];
 
     initState() {
         super.initState();
@@ -128,6 +136,17 @@ export class PosConfig extends Base {
             width: 256,
             height: 256,
         });
+    }
+
+    get availablePricelists() {
+        if (!this.use_pricelist) {
+            return [];
+        }
+        const available_pricelists = new Set(this.available_pricelist_ids);
+        if (this.pricelist_id) {
+            available_pricelists.add(this.pricelist_id);
+        }
+        return Array.from(available_pricelists);
     }
 }
 

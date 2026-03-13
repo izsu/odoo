@@ -3,7 +3,7 @@ import {
     parseRequestParams,
     registerRoute,
 } from "@mail/../tests/mock_server/mail_mock_server";
-import { Command, makeKwArgs } from "@web/../tests/web_test_helpers";
+import { Command, makeKwArgs, serverState } from "@web/../tests/web_test_helpers";
 import { loadBundle } from "@web/core/assets";
 import { patch } from "@web/core/utils/patch";
 
@@ -247,6 +247,19 @@ patch(mailDataHelpers, {
                 LivechatChannel.browse(LivechatChannel.search([])),
                 makeKwArgs({ fields: ["are_you_inside", "name"] })
             );
+            return;
+        }
+        if (name === "/im_livechat/looking_for_help") {
+            const DiscussChannel = this.env["discuss.channel"];
+            store.add(
+                DiscussChannel.browse(
+                    DiscussChannel.search([["livechat_status", "=", "need_help"]])
+                )
+            );
+        }
+        if (name === "/im_livechat/fetch_self_expertise") {
+            const ResUsers = this.env["res.users"];
+            store.add(ResUsers.browse(serverState.userId), ["livechat_expertise_ids"]);
         }
     },
 });

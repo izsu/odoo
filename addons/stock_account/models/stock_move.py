@@ -32,7 +32,7 @@ class StockMove(models.Model):
     value_manual = fields.Monetary(
         "Manual Value", currency_field='company_currency_id',
         compute="_compute_value_manual", inverse="_inverse_value_manual")
-    standard_price = fields.Float(related='product_id.standard_price', string='Standard Price')
+    standard_price = fields.Float(compute='_compute_standard_price', string='Standard Price')
 
     # To remove and only use value
     price_unit = fields.Float("Price Unit")
@@ -42,13 +42,31 @@ class StockMove(models.Model):
     is_valued = fields.Boolean(string='Is Valued', compute='_compute_is_valued')
 
     remaining_qty = fields.Float(
-        string='Remaining Quantity', compute='_compute_remaining_qty')
+        string='Remaining Quantity', compute='_compute_remaining_qty', search='search_remaining_qty')
     remaining_value = fields.Monetary(
         currency_field='company_currency_id',
         string='Remaining Value', compute='_compute_remaining_value')
 
     analytic_account_line_ids = fields.Many2many('account.analytic.line', copy=False)
     account_move_id = fields.Many2one('account.move', 'stock_move_id', copy=False, index="btree_not_null")
+
+    def search_remaining_qty(self, operator, value):
+        if operator != '=' or not isinstance(value, bool) or value is not True:
+            raise UserError(_("Only is set (= True) is supported in search for remaining_qty."))
+        products = 'default_product_id' in self.env.context and self.env['product.product'].browse(self.env.context['default_product_id']) or self.env['product.product']
+        if not products:
+            products = self.env['product.product'].search([('is_storable', '=', True), ('qty_available', '>', 0)])
+        move_ids = []
+        for company in self.env.companies:
+            for qty_by_move in products.with_company(company)._get_remaining_moves().values():
+                for move in qty_by_move:
+                    move_ids.append(move.id)
+        return [('id', 'in', move_ids)]
+
+    @api.depends('product_id.standard_price')
+    def _compute_standard_price(self):
+        for move in self:
+            move.standard_price = move.product_id.with_company(move.company_id).standard_price
 
     @api.depends('state', 'move_line_ids')
     def _compute_is_in(self):
@@ -94,18 +112,19 @@ class StockMove(models.Model):
             if computed_value_data['description'] == move.value_justification:
                 move.value_computed_justification = False
             else:
-                value = move.currency_id.format(computed_value_data['value'])
+                value = move.company_currency_id.format(computed_value_data['value'])
                 move.value_computed_justification = self.env._(
                     'Computed value: %(value)s\n%(description)s',
                     value=value, description=computed_value_data['description'])
 
     @api.depends('quantity', 'product_id.stock_move_ids.value')
     def _compute_remaining_qty(self):
-        products = self.product_id
-        remaining_by_product = products._get_remaining_moves()
+        for company, moves in self.grouped('company_id').items():
+            products = moves.product_id
+            remaining_by_product = products.with_company(company)._get_remaining_moves()
 
-        for move in self:
-            move.remaining_qty = remaining_by_product.get(move.product_id, {}).get(move, 0)
+            for move in moves:
+                move.remaining_qty = remaining_by_product.get(move.product_id, {}).get(move, 0)
 
     @api.depends('value', 'remaining_qty')
     def _compute_remaining_value(self):
@@ -117,7 +136,7 @@ class StockMove(models.Model):
             if move.product_id.cost_method == 'fifo':
                 move.remaining_value = ratio * move.value if ratio else 0
             else:
-                move.remaining_value = move.remaining_qty * move.with_company(move.company_id).standard_price
+                move.remaining_value = move.remaining_qty * move.standard_price
 
     def _inverse_picked(self):
         super()._inverse_picked()
@@ -149,15 +168,15 @@ class StockMove(models.Model):
     def _action_done(self, cancel_backorder=False):
         # Use _is_out() instead of is_out since the move is not done
         # It's called before action_done since we need the current fifo
-        # stack. Limitation when validating at same time out and in.s
+        # stack. Limitation when validating at same time out and ins
         moves_out = self.filtered(lambda m: m._is_out())
         moves_out._set_value()
         moves = super()._action_done(cancel_backorder=cancel_backorder)
         moves_in = moves.filtered(lambda m: m.is_in or m.is_dropship)
         moves_in._set_value()
         moves._create_account_move()
-        # Update standard price on outgoing fifo products
-        moves_out.product_id.filtered(lambda p: p.cost_method == 'fifo')._update_standard_price()
+        # Update standard price on outgoing fifo or lot valuated average products
+        moves_out.product_id.filtered(lambda p: p.cost_method == 'fifo' or (p.cost_method == 'average' and p.lot_valuated))._update_standard_price()
         (moves_in | moves_out).sudo()._create_analytic_move()
         return moves
 
@@ -171,7 +190,7 @@ class StockMove(models.Model):
                 move_to_link.add(move.id)
         if not aml_vals_list:
             return self.env['account.move']
-        account_move = self.env['account.move'].create({
+        account_move = self.env['account.move'].sudo().create({
             'journal_id': self.company_id.account_stock_journal_id.id,
             'line_ids': [Command.create(aml_vals) for aml_vals in aml_vals_list],
             'date': self.env.context.get('force_period_date') or fields.Date.context_today(self),
@@ -193,19 +212,24 @@ class StockMove(models.Model):
         else:
             debit_acc = self.location_dest_id.valuation_account_id
             credit_acc = self.product_id._get_product_accounts()['stock_valuation']
+        value = self._get_aml_value()
         return [{
             'account_id': credit_acc.id,
-            'name': self.reference,
+            'name': self.reference + ' - ' + self.product_id.name,
             'debit': 0,
-            'credit': self.value,
+            'credit': value,
             'product_id': self.product_id.id,
         }, {
             'account_id': debit_acc.id,
-            'name': self.reference,
-            'debit': self.value,
+            'name': self.reference + ' - ' + self.product_id.name,
+            'debit': value,
             'credit': 0,
             'product_id': self.product_id.id,
         }]
+
+    def _get_aml_value(self):
+        self.ensure_one()
+        return self.value
 
     def _get_analytic_distribution(self):
         return {}
@@ -216,7 +240,19 @@ class StockMove(models.Model):
             return 0
         total_value = sum(self.mapped('value'))
         total_qty = sum(m._get_valued_qty() for m in self)
-        return total_value / total_qty if total_qty else self.product_id.standard_price
+        return total_value / total_qty if total_qty else 0
+
+    def _get_cogs_price_unit(self, quantity=0):
+        """ Returns the COGS unit price to value this stock move
+        quantity should be given in product uom """
+
+        if len(self.product_id) > 1:
+            return 0
+        total_qty = sum(m._get_valued_qty() for m in self)
+        if not total_qty:
+            return 0
+        return sum(self.mapped('value')) / total_qty if self.product_id.cost_method == 'fifo' or \
+            (self.product_id.lot_valuated and self.product_id.cost_method == 'average') else self.product_id.standard_price
 
     @api.model
     def _get_valued_types(self):
@@ -241,12 +277,17 @@ class StockMove(models.Model):
         """
         products_to_recompute = set()
         lots_to_recompute = set()
+        fifo_qty_processed = defaultdict(float)
 
         for move in self:
             # Incoming moves
             if move.is_dropship or move.is_in:
                 products_to_recompute.add(move.product_id.id)
                 if move.product_id.lot_valuated:
+                    if any(not ml.lot_id for ml in move.move_line_ids):
+                        raise UserError(self.env._(
+                            "A lot/serial number is required for product '%s' as it has lot valuation enabled.",
+                            move.product_id.display_name))
                     lots_to_recompute.update(move.move_line_ids.lot_id.ids)
             if move.is_in:
                 move.value = move.sudo()._get_value()
@@ -270,10 +311,11 @@ class StockMove(models.Model):
                 continue
 
             if move.product_id.cost_method == 'fifo':
-                move.value = move.product_id._run_fifo(move._get_valued_qty())
+                valued_qty = move._get_valued_qty()
+                move.value = move.product_id.with_context(fifo_qty_already_processed=fifo_qty_processed[move.product_id])._run_fifo(valued_qty)
+                fifo_qty_processed[move.product_id] += valued_qty
             else:
-                qty = move.product_uom._compute_quantity(move.quantity, move.product_id.uom_id, rounding_method='HALF-UP')
-                move.value = move.product_id.standard_price * qty
+                move.value = move.product_id.standard_price * move._get_valued_qty()
 
         # Recompute the standard price
         self.env['product.product'].browse(products_to_recompute)._update_standard_price()
@@ -386,7 +428,7 @@ class StockMove(models.Model):
         domain = Domain([('move_id', '=', self.id)])
         if at_date:
             domain &= Domain([('date', '<=', at_date)])
-        manual_value = self.env['product.value'].search(domain, order="date desc, id desc", limit=1)
+        manual_value = self.env['product.value'].sudo().search(domain, order="date desc, id desc", limit=1)
         if manual_value:
             valuation_data['value'] = manual_value.value
             valuation_data['quantity'] = quantity
@@ -420,15 +462,17 @@ class StockMove(models.Model):
 
     def _get_value_from_std_price(self, quantity, std_price=False, at_date=None):
         std_price = std_price if std_price else self.product_id.standard_price
-        if at_date:
+        if at_date and self.product_id.cost_method == 'standard':
             std_price = std_price or self.product_id._get_standard_price_at_date(at_date)
+        # If multiple lots keep standard_price from product
+        elif self.product_id.lot_valuated and len(self.lot_ids) == 1:
+            std_price = self.lot_ids.standard_price
         return {
             'value': std_price * quantity,
             'quantity': quantity,
-            'description': _("%(quantity)s %(uom)s at product's standard price %(price)s",
+            'description': self.env._("%(quantity)s %(uom)s at product's cost",
                 quantity=quantity,
                 uom=self.product_id.uom_id.name,
-                price=self.company_currency_id.format(std_price),
             ),
         }
 
@@ -436,27 +480,7 @@ class StockMove(models.Model):
         return dict(VALUATION_DICT)
 
     def _get_move_directions(self):
-        move_in_ids = set()
-        move_out_ids = set()
-        locations_should_be_valued = (self.move_line_ids.location_id | self.move_line_ids.location_dest_id).filtered(lambda l: l._should_be_valued())
-        for record in self:
-            for move_line in record.move_line_ids:
-                if move_line._should_exclude_for_valuation() or not move_line.picked:
-                    continue
-                if move_line.location_id not in locations_should_be_valued and move_line.location_dest_id in locations_should_be_valued:
-                    move_in_ids.add(record.id)
-                if move_line.location_id in locations_should_be_valued and move_line.location_dest_id not in locations_should_be_valued:
-                    move_out_ids.add(record.id)
-
-        move_directions = defaultdict(set)
-        for record in self:
-            if record.id in move_in_ids and not record._is_dropshipped_returned():
-                move_directions[record.id].add('in')
-
-            if record.id in move_out_ids and not record._is_dropshipped():
-                move_directions[record.id].add('out')
-
-        return move_directions
+        return defaultdict(set)
 
     def _get_in_move_lines(self, lot=None):
         """ Returns the `stock.move.line` records of `self` considered as incoming. It is done thanks

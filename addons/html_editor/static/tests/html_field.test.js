@@ -913,7 +913,7 @@ test("Embed video by pasting video URL", async () => {
         resModel: "partner",
         arch: `
             <form>
-                <field name="txt" widget="html"/>
+                <field name="txt" widget="html" options="{'debounceHints': false}"/>
             </form>`,
     });
 
@@ -929,13 +929,51 @@ test("Embed video by pasting video URL", async () => {
     // Press Enter to select first option in the powerbox ("Embed Youtube Video").
     await press("Enter");
     await animationFrame();
-    const videoIframe = queryOne("div.media_iframe_video");
+    const videoIframe = queryOne("div[data-embedded='video']");
     expect(videoIframe.nextElementSibling).toHaveOuterHTML(
         '<div class="o-paragraph" data-selection-placeholder=""><br></div>'
     );
     expect(
-        `div.media_iframe_video iframe[data-src="https://www.youtube.com/embed/${videoId}"]`
+        `div[data-embedded='video'] iframe[data-src="https://www.youtube.com/embed/${videoId}"]`
     ).toHaveCount(1);
+});
+
+test("Embedded video shouldn't have the 'media_iframe_video' class", async () => {
+    const videoId = "qxb74CMR748";
+    const videoURL = `https://www.youtube.com/watch?v=${videoId}`;
+
+    onRpc("/html_editor/video_url/data", async () => ({
+        platform: "youtube",
+        video_id: videoId,
+        embed_url: `https://www.youtube.com/embed/${videoId}`,
+    }));
+
+    await mountView({
+        type: "form",
+        resId: 1,
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="txt" widget="html"/>
+            </form>`,
+    });
+
+    setSelectionInHtmlField();
+
+    // Open the video tab of the media dialog
+    await insertText(htmlEditor, "/video");
+    await waitFor(".o-we-powerbox");
+    await press("Enter");
+    await waitFor(".o_select_media_dialog");
+    expect(".o_select_media_dialog .nav-link:contains('Videos')").toHaveClass("active");
+    await animationFrame();
+
+    await contains(".o_video_dialog_form textarea").edit(videoURL);
+    await waitFor(".modal-dialog .modal-footer .btn-primary:not(:disabled)", { timeout: 2000 });
+    await contains(".modal-dialog .modal-footer .btn-primary").click();
+    await animationFrame();
+
+    expect("div[data-embedded='video']").not.toHaveClass(".media_iframe_video");
 });
 
 test("isDirty should be false when the content is being transformed by the editor", async () => {
@@ -959,6 +997,54 @@ test("isDirty should be false when the content is being transformed by the edito
         message: "value should be sanitized by the editor",
     });
     expect(`.o_form_button_save`).not.toBeVisible();
+});
+
+test("isDirty should not be reset to false if onChange fired between getEditorContent and updateValue", async () => {
+    let htmlField;
+    const { promise: firstStep, resolve: resolveFirst } = Promise.withResolvers();
+    const { promise: secondStep, resolve: resolveSecond } = Promise.withResolvers();
+    const { promise: thirdStep, resolve: resolveThird } = Promise.withResolvers();
+    patchWithCleanup(HtmlField.prototype, {
+        setup() {
+            super.setup();
+            htmlField = this;
+        },
+        async getEditorContent() {
+            const el = await super.getEditorContent();
+            resolveFirst();
+            await secondStep;
+            return el;
+        },
+        async updateValue() {
+            const updated = await super.updateValue(...arguments);
+            resolveThird();
+            return updated;
+        },
+    });
+    await mountView({
+        type: "form",
+        resId: 1,
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="txt" widget="html"/>
+            </form>`,
+    });
+    expect(htmlField.isDirty).toBe(false);
+    expect(`.o_form_button_save`).not.toBeVisible();
+    const p = htmlField.editor.editable.querySelector("p");
+    p.append(htmlField.editor.document.createTextNode("Second"));
+    htmlField.editor.shared.history.addStep();
+    await clickSave();
+    await firstStep;
+    p.append(htmlField.editor.document.createTextNode("Third"));
+    htmlField.editor.shared.history.addStep();
+    resolveSecond();
+    await thirdStep;
+    await animationFrame();
+    expect(htmlField.editor.editable).toHaveInnerHTML(`<p>firstSecondThird</p>`);
+    expect(htmlField.isDirty).toBe(true);
+    expect(`.o_form_button_save`).toBeVisible();
 });
 
 test.tags("desktop");
@@ -1044,7 +1130,7 @@ test("html field with a placeholder", async () => {
         resModel: "partner",
         arch: `
             <form>
-                <field name="txt" widget="html" placeholder="test"/>
+                <field name="txt" widget="html" placeholder="test" options="{'debounceHints': false}"/>
             </form>`,
     });
 
@@ -1164,6 +1250,45 @@ test("should display overlay on video hover and handle video replacement and rem
     expect(queryAllTexts(".o-dropdown-item")[1]).toBe("Remove");
     await click(".o-dropdown-item .fa-trash");
     await expectElementCount('div[data-embedded="video"]', 0);
+});
+
+test.tags("desktop");
+test("add Vimeo video link in 'Videos' tab of MediaDialog", async () => {
+    const vimeoVideoLink = "https://vimeo.com/1128489814?fl=wc";
+    await mountView({
+        type: "form",
+        resId: 1,
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="txt" widget="html"/>
+            </form>`,
+    });
+    setSelectionInHtmlField();
+
+    await onRpc("/html_editor/video_url/data", async () => ({
+        video_id: "1128489814",
+        platform: "vimeo",
+        embed_url: vimeoVideoLink,
+    }));
+
+    // Insert Vimeo video link
+    await insertText(htmlEditor, "/video");
+    await waitFor(".o-we-powerbox");
+    expect(queryAllTexts(".o-we-command-name")[0]).toBe("Media");
+
+    await press("Enter");
+    await contains(".modal-body .nav-link:contains('Videos')").click();
+    await waitFor("textarea[id='o_video_text']");
+
+    const input = queryOne("textarea[id='o_video_text']");
+    input.value = vimeoVideoLink;
+    manuallyDispatchProgrammaticEvent(input, "input", {
+        inputType: "insertText",
+    });
+    await waitFor(".o_video_dialog_options", { timeout: 1500 });
+    expect(input).toHaveClass("is-valid");
+    await click(queryOne(".modal-footer").firstChild);
 });
 
 test("MediaDialog contains 'Videos' tab by default in html field", async () => {
@@ -2497,6 +2622,7 @@ describe("save image", () => {
         await delay(50);
         // reswitch tab, and check the image was saved properly.
         await contains(".o_notebook_headers .nav-link:not(.active)").click();
+        await waitFor(".odoo-editor-editable");
         const savedImg = htmlEditor.editable.querySelector("img");
         expect(savedImg.getAttribute("src")).toBe("/test_image_url.png?access_token=1234");
         expect(savedImg).not.toHaveClass("o_b64_image_to_save");

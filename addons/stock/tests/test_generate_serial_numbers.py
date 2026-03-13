@@ -3,7 +3,7 @@
 
 from odoo import Command
 from odoo.exceptions import ValidationError
-from odoo.tests import TransactionCase
+from odoo.tests import TransactionCase, new_test_user
 
 
 class StockGenerateCommon(TransactionCase):
@@ -419,3 +419,90 @@ class StockGenerateCommon(TransactionCase):
             {'quantity': 1, 'lot_id': sn_t2_04.id},
             {'quantity': 1, 'lot_id': sn_t2_05.id},
         ])
+
+    def test_sequence_serial_numbers_access_rights(self):
+        """
+        This test ensures that when a user has access to generating serial numbers,
+        no Sequence access error is raised.
+        """
+        receipt_picking = self.env['stock.picking'].create({
+            'picking_type_id': self.warehouse.in_type_id.id,
+            'location_id': self.env.ref('stock.stock_location_suppliers').id,
+            'location_dest_id': self.warehouse.lot_stock_id.id,
+        })
+
+        # Simulate context provided from JS side, cf addons/stock/static/src/widgets/generate_serial.js:63-68
+        action_context = {
+            'default_company_id': self.env.company.id,
+            'default_picking_id': receipt_picking.id,
+            'default_picking_type_id': self.warehouse.in_type_id.id,
+            'default_location_id': receipt_picking.location_id.id,
+            'default_location_dest_id': receipt_picking.location_dest_id.id,
+            'default_product_id': self.product_serial.id,
+            'default_tracking': 'serial',
+        }
+
+        inventory_user = new_test_user(
+            self.env,
+            login='user_without_sn_generation_rights',
+            groups='stock.group_stock_user',
+        )
+        first_num = self.product_serial.lot_sequence_id.number_next_actual
+        self.product_serial.lot_sequence_id.invalidate_recordset(['number_next_actual'])
+        move_line_vals = self.env['stock.move'].with_user(inventory_user.id).action_generate_lot_line_vals(
+            action_context, 'generate', self.product_serial.lot_sequence_id.next_by_id(), 5, False
+        )
+        self.assert_move_line_vals_values(move_line_vals, [
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 1)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 2)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 3)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 4)},
+        ])
+
+        move_line_vals = self.env['stock.move'].with_user(inventory_user.id).action_generate_lot_line_vals(
+            action_context, 'generate', self.product_serial.lot_sequence_id.next_by_id(), 5, False
+        )
+        self.assert_move_line_vals_values(move_line_vals, [
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 5)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 6)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 7)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 8)},
+            {'quantity': 1, 'lot_name': self.product_serial.lot_sequence_id.get_next_char(first_num + 9)},
+        ])
+
+    def test_lots_generation_on_product_with_no_lot_sequence(self):
+        """ Test lots generation for a lot-tracked product without a defined lot_sequence_id.
+
+            When `lot_sequence_id` is not set, lot names are generated
+            from the user-provided `first_lot` value.
+
+            For example, if `first_lot='lot01'` and quantity is 4,
+            the generated lot names will be:
+            lot01, lot02, lot03, lot04, using `generate_lot_names()`.
+        """
+        product = self.product_serial
+        product.write({'tracking': 'lot', 'lot_sequence_id': False})
+        move_line_vals = self.env['stock.move'].action_generate_lot_line_vals({
+                'default_tracking': 'lot',
+                'default_product_id': product.id,
+                'default_location_dest_id': self.location_dest.id,
+                'default_quantity': 4,
+            }, "generate", "lot01", 1, "test")
+        lot_names = self.env['stock.lot'].generate_lot_names("lot01", len(move_line_vals))
+        test_vals = [
+            {'quantity': 1, 'lot_name': lot['lot_name']}
+            for lot in lot_names
+        ]
+        self.assert_move_line_vals_values(move_line_vals, test_vals)
+
+    def test_lots_generation_on_product_with_zero_quantity_received(self):
+        product = self.product_serial
+        product.tracking = 'lot'
+        move_line_vals = self.env['stock.move'].action_generate_lot_line_vals({
+                'default_tracking': 'lot',
+                'default_product_id': product.id,
+                'default_location_dest_id': self.location_dest.id,
+                'default_quantity': 0,
+            }, "generate", "", 3, "test")
+        self.assert_move_line_vals_values(move_line_vals, [])

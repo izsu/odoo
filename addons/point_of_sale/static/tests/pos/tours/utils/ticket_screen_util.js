@@ -44,7 +44,7 @@ export function selectOrderByPrice(price) {
 export function doubleClickOrder(orderName) {
     return [
         {
-            trigger: `.ticket-screen .order-row > .col:nth-child(2):contains("${orderName}")`,
+            trigger: `.ticket-screen .order-row:contains("${orderName}")`,
             run: "dblclick",
         },
     ];
@@ -201,9 +201,20 @@ export function toRefundTextContains(text) {
         trigger: `.ticket-screen .to-refund-highlight:contains("${text}")`,
     });
 }
+export function toRefundLineContains(product, text) {
+    return inLeftSide({
+        trigger: `.ticket-screen div:has(.product-name:contains("${product}")):has(.to-refund-highlight:contains("${text}"))`,
+    });
+}
 export function refundedNoteContains(text) {
     return inLeftSide({
         trigger: `.ticket-screen .refund-note:contains("${text}")`,
+    });
+}
+export function noLinesToRefund() {
+    return inLeftSide({
+        content: "No lines are marked for to refund or refunding",
+        trigger: ".ticket-screen:not(:has(.to-refund-highlight))",
     });
 }
 export function tipContains(amount) {
@@ -246,4 +257,13 @@ export function noOrderIsThere() {
         content: "No orders should be visible on the Ticket Screen",
         trigger: ".ticket-screen:not(:has(.order-row))",
     };
+}
+
+export function isShown() {
+    return [
+        {
+            content: "ticket screen is shown",
+            trigger: ".pos .ticket-screen",
+        },
+    ];
 }

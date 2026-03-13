@@ -168,6 +168,7 @@ For more specific needs, you may also assign custom-defined actions
             ('remove', 'mail/static/src/discuss/**/*.dark.scss'),
             'mail/static/src/views/fields/**/*',
             ('remove', 'mail/static/src/views/web/activity/**'),
+            'mail/static/src/convert_inline/**/*',
         ],
         'web.assets_backend_lazy': [
             'mail/static/src/views/web/activity/**',
@@ -209,6 +210,9 @@ For more specific needs, you may also assign custom-defined actions
         ],
         'mail.assets_lamejs': [
             'mail/static/lib/lame/lame.js',
+        ],
+        "mail.assets_message_email": [
+            "web/static/lib/odoo_ui_icons/style.css",
         ],
         'mail.assets_public': [
             'web/static/lib/jquery/jquery.js',

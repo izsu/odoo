@@ -1,5 +1,14 @@
 import { expect, test } from "@odoo/hoot";
-import { click, dblclick, pointerUp, press, queryOne, waitFor, waitForNone } from "@odoo/hoot-dom";
+import {
+    click,
+    dblclick,
+    pointerUp,
+    press,
+    queryOne,
+    waitFor,
+    waitForNone,
+    manuallyDispatchProgrammaticEvent,
+} from "@odoo/hoot-dom";
 import { animationFrame } from "@odoo/hoot-mock";
 import { contains } from "@web/../tests/web_test_helpers";
 import { base64Img, setupEditor } from "./_helpers/editor";
@@ -102,6 +111,20 @@ test("can undo a shape", async () => {
     undo(editor);
     await expectElementCount(".o-we-toolbar button[name='shape_rounded'].active", 0);
     expect("img").not.toHaveClass("rounded");
+});
+
+test("focus description input by default when image description popover opens", async () => {
+    await setupEditor(`
+        <img src="${base64Img}">
+    `);
+    await click("img");
+    await waitFor(".o-we-toolbar");
+
+    await click(".o-we-toolbar .btn-group[name='image_description'] button");
+    await animationFrame();
+
+    expect(".o-we-image-description-popover").toHaveCount(1);
+    expect("input[name='description']").toBeFocused();
 });
 
 test("can add an image description & tooltip", async () => {
@@ -477,7 +500,7 @@ test("Can delete an image", async () => {
 test("Deleting an image that is alone inside `p` should set selection at start of `p`", async () => {
     const { el } = await setupEditor(`<p><img>[]</p>`);
     await click("img");
-    await waitFor(".o-we-toolbar");
+    await waitFor('.o-we-toolbar[data-namespace="image"');
     expect("button[name='image_delete']").toHaveCount(1);
     await click("button[name='image_delete']");
     await animationFrame();
@@ -490,7 +513,7 @@ test("Deleting an image that is alone inside `p` should set selection at start o
 test("Deleting an image that is the only content inside a <p> tag should place the selection at the start of the <p>", async () => {
     const { el } = await setupEditor(`<p>abc<img>[]</p>`);
     await click("img");
-    await waitFor(".o-we-toolbar");
+    await waitFor('.o-we-toolbar[data-namespace="image"');
     expect("button[name='image_delete']").toHaveCount(1);
     await click("button[name='image_delete']");
     await animationFrame();
@@ -612,4 +635,20 @@ test("Preview an image on dblclick", async () => {
     await dblclick("img.test-image");
     await animationFrame();
     expect(".o-FileViewer").toHaveCount(1);
+});
+
+test("should select image on pointerdown", async () => {
+    const { plugins } = await setupEditor(`
+        <img src="${base64Img}">
+        <p>test[]</p>
+    `);
+
+    const imgElement = document.querySelector("img");
+    await manuallyDispatchProgrammaticEvent(imgElement, "pointerdown");
+    await animationFrame();
+
+    const selectionPlugin = plugins.get("selection");
+    const selectedNode = selectionPlugin.getTargetedNodes()[0];
+
+    expect(selectedNode.tagName).toBe("IMG");
 });

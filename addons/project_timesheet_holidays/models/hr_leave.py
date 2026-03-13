@@ -1,6 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import fields, models, _
+from odoo import api, fields, models, _
 
 import pytz
 
@@ -34,7 +34,7 @@ class HrLeave(models.Model):
                 continue
 
             calendar = leave.employee_id.resource_calendar_id
-            calendar_timezone = pytz.timezone(calendar.tz)
+            calendar_timezone = pytz.timezone((calendar or leave.employee_id).tz)
 
             if calendar.flexible_hours and (leave.request_unit_hours or leave.request_unit_half or leave.date_from.date() == leave.date_to.date()):
                 leave_date = leave.date_from.astimezone(calendar_timezone).date()
@@ -126,7 +126,15 @@ class HrLeave(models.Model):
         timesheet_ids_to_remove = []
         for leave in self:
             if leave.number_of_days == 0 and leave.sudo().timesheet_ids:
+                timesheet_ids_to_remove.extend(leave.timesheet_ids.ids)
                 leave.sudo().timesheet_ids.holiday_id = False
-                timesheet_ids_to_remove.extend(leave.timesheet_ids)
         self.env['account.analytic.line'].browse(set(timesheet_ids_to_remove)).sudo().unlink()
         return res
+
+    @api.ondelete(at_uninstall=False)
+    def _unlink_timesheets(self):
+        """ Remove timesheets when the timeoff is deleted. """
+        timesheets = self.sudo().timesheet_ids
+        timesheets.write({'holiday_id': False})
+        timesheets.unlink()
+        self._check_missing_global_leave_timesheets()
